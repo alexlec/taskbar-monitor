@@ -70,7 +70,7 @@ const LABELS: [&str; 4] = ["CPU", "GPU", "VRAM", "RAM"];
 const ID_SHOW: usize = 120; // + index into LABELS
 const ID_POS_RIGHT: usize = 130;
 const ID_POS_LEFT: usize = 131;
-const ID_PIN: usize = 140;
+const ID_PIN: usize = 160;
 
 /// Which metrics are on the bar, one bit per entry of LABELS. Stored in
 /// HKCU\Software\TaskbarMonitor\Metrics; defaults to CPU, GPU and RAM.
