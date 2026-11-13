@@ -69,6 +69,10 @@ Settings live in `HKCU\Software\TaskbarMonitor`: `Metrics` (bitmask, bit i = `LA
 - **Fullscreen hiding** uses an appbar registered with `ABM_NEW` only (no `ABM_SETPOS`, so the work
   area is untouched) to get `ABN_FULLSCREENAPP` instantly. Re-register on `TaskbarCreated`
   (Explorer restart). `WM_DESTROY` removes it; the app only quits when `QUITTING` is set.
+- **Pinned panel.** Unpinned, the popup is re-asserted `HWND_TOPMOST` every second; pinned, it is only raised when shown
+  (re-asserting made it jump over other always-on-top windows). It hides with the bar for a fullscreen app or a missing
+  taskbar (`on_bar_hidden`), not for an auto-hidden taskbar. Dragging uses `SetCapture`, not `HTCAPTION`, whose move loop
+  fights the periodic `place()`; `refresh()` skips `place()` for as long as a press or drag is pending.
 - **Left position** only when the taskbar is centered (`TaskbarAl != 0`); offset 220 logical px if
   Widgets is shown (`TaskbarDa`), otherwise 8.
 - **Self-update** can't overwrite a running exe: download `.exe.new`, rename current to `.exe.old`,

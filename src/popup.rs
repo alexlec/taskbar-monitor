@@ -22,7 +22,8 @@ use crate::overlay::{read_dword, write_setting, SETTINGS_KEY};
 use crate::{with_monitor, OVERLAY, POPUP};
 
 const CLASS: PCWSTR = w!("TaskbarMonitor.Popup");
-const GUIDE_CLASS: PCWSTR = w!("TaskbarMonitor.Guide");
+const PREVIEW_CLASS: PCWSTR = w!("TaskbarMonitor.Preview");
+const MARKER_CLASS: PCWSTR = w!("TaskbarMonitor.Marker");
 /// From Win32_UI_Controls, which would be a whole feature for one constant.
 const WM_MOUSELEAVE: u32 = 0x02A3;
 /// Settings: keep the panel open (0/1) and where it sits (see `slot_pos`).
@@ -40,10 +41,15 @@ const C_RAM: COLORREF = rgb(0xb0, 0x7c, 0xff);
 const C_GPU: COLORREF = rgb(0x3d, 0xd6, 0x8c);
 const C_VRAM: COLORREF = rgb(0xf5, 0xa5, 0x24);
 
-/// Transparent colour of the slot guide window.
-const KEY: COLORREF = rgb(0xff, 0x00, 0xff);
-const GUIDE_DIM: COLORREF = rgb(0xb0, 0xb0, 0xb0);
-const GUIDE_NEAREST: COLORREF = rgb(0x6f, 0xb6, 0xff);
+/// Drag guide: a translucent preview where the panel will land, and a dot in each other slot.
+const PREVIEW_FILL: COLORREF = C_CPU;
+const PREVIEW_EDGE: COLORREF = rgb(0xa8, 0xd2, 0xff);
+/// Preview opacity, out of 255.
+const PREVIEW_ALPHA: u8 = 100;
+const MARKER_FILL: COLORREF = rgb(0xf2, 0xf2, 0xf2);
+const MARKER_EDGE: COLORREF = rgb(0x20, 0x20, 0x20);
+const MARKER_ALPHA: u8 = 215;
+const MARKER_SIZE: f32 = 12.0;
 
 const COL_W: f32 = 300.0;
 const GUTTER: f32 = 32.0;
@@ -77,12 +83,16 @@ struct Gesture {
     active: bool,
     /// Work area of the bar's monitor: the panel is kept inside it while dragged.
     work: RECT,
-    /// Click-through window that outlines the slots while dragging.
-    guide: HWND,
     /// Where the panel would land in each slot.
     rects: [RECT; SLOTS],
+    /// Slots offered while dragging: a corner that mostly overlaps slot 0 is left out.
+    offered: [bool; SLOTS],
     /// Slot nearest to the panel right now.
     nearest: u32,
+    /// Translucent rectangle at the nearest slot, and a dot in each other offered slot. All
+    /// click-through and created at drag start, destroyed at drag end.
+    preview: HWND,
+    markers: [HWND; SLOTS],
 }
 
 thread_local! {
@@ -108,14 +118,16 @@ pub unsafe fn create(hinst: HINSTANCE) -> Result<HWND> {
         ..Default::default()
     };
     RegisterClassExW(&wc);
-    let guide = WNDCLASSEXW {
-        cbSize: size_of::<WNDCLASSEXW>() as u32,
-        lpfnWndProc: Some(guide_proc),
-        hInstance: hinst,
-        lpszClassName: GUIDE_CLASS,
-        ..Default::default()
-    };
-    RegisterClassExW(&guide);
+    for (class, proc) in [(PREVIEW_CLASS, Some(preview_proc as _)), (MARKER_CLASS, Some(marker_proc as _))] {
+        let guide = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: proc,
+            hInstance: hinst,
+            lpszClassName: class,
+            ..Default::default()
+        };
+        RegisterClassExW(&guide);
+    }
     let hwnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         CLASS,
@@ -146,14 +158,14 @@ pub fn toggle() {
             return;
         }
         SUSPENDED.set(false);
-        place(p);
+        place(p, true);
         let _ = ShowWindow(p, SW_SHOW);
         let _ = SetForegroundWindow(p);
     }
 }
 
 /// Close if open (the menu hangs off this window, so it must not stay on top of it).
-/// Returns whether it was open, so a pinned panel can be brought back after the menu.
+/// Returns whether it was open, so the panel can be brought back after the menu.
 pub fn close() -> bool {
     let p = POPUP.get();
     unsafe {
@@ -165,14 +177,20 @@ pub fn close() -> bool {
     }
 }
 
-/// Show again after `close()`, without taking focus from whatever the user returns to.
+/// Show again after `close()`. A pinned panel doesn't take focus from whatever the user returns to;
+/// an unpinned one needs it, or it would never see the focus loss that closes it.
 pub fn reopen() {
     let p = POPUP.get();
     unsafe {
         if !IsWindowVisible(p).as_bool() {
             SUSPENDED.set(false);
-            place(p);
-            let _ = ShowWindow(p, SW_SHOWNOACTIVATE);
+            place(p, true);
+            if PINNED.get() {
+                let _ = ShowWindow(p, SW_SHOWNOACTIVATE);
+            } else {
+                let _ = ShowWindow(p, SW_SHOW);
+                let _ = SetForegroundWindow(p);
+            }
         }
     }
 }
@@ -189,8 +207,8 @@ pub fn set_pinned(on: bool) {
     }
 }
 
-/// The bar was hidden (fullscreen app, auto-hidden taskbar): a pinned panel goes with it, since it
-/// would otherwise float alone over the fullscreen app.
+/// The bar is gone (a fullscreen app, or no taskbar): a pinned panel goes with it, since it would
+/// otherwise float alone over the fullscreen app.
 pub fn on_bar_hidden() {
     let p = POPUP.get();
     unsafe {
@@ -207,7 +225,7 @@ pub fn on_bar_shown() {
     let p = POPUP.get();
     unsafe {
         if SUSPENDED.take() && PINNED.get() {
-            place(p);
+            place(p, true);
             let _ = ShowWindow(p, SW_SHOWNOACTIVATE);
         }
     }
@@ -218,9 +236,10 @@ pub fn refresh() {
     let p = POPUP.get();
     unsafe {
         if IsWindowVisible(p).as_bool() {
-            // While dragging, the panel is under the mouse, not in its slot
-            if !dragging() {
-                place(p);
+            // While pressed or dragging, the panel is under the mouse, not in its slot. A pinned panel
+            // isn't raised again: it would keep jumping over other always-on-top windows.
+            if GESTURE.get().is_none() {
+                place(p, !PINNED.get());
             }
             let _ = InvalidateRect(Some(p), None, false);
         }
@@ -229,6 +248,7 @@ pub fn refresh() {
 
 unsafe fn hide(p: HWND) {
     end_gesture(p);
+    HOVER.set(Hit::None);
     let _ = ShowWindow(p, SW_HIDE);
     HIDDEN_AT.set(GetTickCount64());
 }
@@ -291,12 +311,21 @@ fn slot_pos(a: &Area, slot: u32) -> (i32, i32) {
     }
 }
 
-/// Put the panel in its slot, above everything else in the ordinary topmost band.
-unsafe fn place(p: HWND) {
+/// Put the panel in its slot. `raise` also puts it on top of the other topmost windows; without it
+/// the z-order is left alone and nothing happens unless the panel actually has to move or resize.
+unsafe fn place(p: HWND, raise: bool) {
     let s = scale();
     let (w, h) = size(s);
     let (x, y) = slot_pos(&area(s, w, h), SLOT.get());
-    let _ = SetWindowPos(p, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
+    if raise {
+        let _ = SetWindowPos(p, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
+        return;
+    }
+    let mut r = RECT::default();
+    let _ = GetWindowRect(p, &mut r);
+    if (r.left, r.top, r.right - r.left, r.bottom - r.top) != (x, y, w, h) {
+        let _ = SetWindowPos(p, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
+    }
 }
 
 /// Pin and close buttons in the top row, pin at the corner. Close only exists while pinned.
@@ -329,11 +358,22 @@ fn mouse_xy(lp: LPARAM) -> (i32, i32) {
     ((lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32)
 }
 
-/// Slot whose landing rectangle is closest to `r`, by distance between centres.
-fn nearest_slot(rects: &[RECT; SLOTS], r: &RECT) -> u32 {
-    let centre = |r: &RECT| ((r.left + r.right) as i64 / 2, (r.top + r.bottom) as i64 / 2);
+/// Area of the intersection of two rectangles.
+fn overlap(a: &RECT, b: &RECT) -> i64 {
+    let w = (a.right.min(b.right) - a.left.max(b.left)).max(0) as i64;
+    let h = (a.bottom.min(b.bottom) - a.top.max(b.top)).max(0) as i64;
+    w * h
+}
+
+fn centre(r: &RECT) -> (i64, i64) {
+    ((r.left + r.right) as i64 / 2, (r.top + r.bottom) as i64 / 2)
+}
+
+/// Offered slot whose landing rectangle is closest to `r`, by distance between centres.
+fn nearest_slot(rects: &[RECT; SLOTS], offered: &[bool; SLOTS], r: &RECT) -> u32 {
     let (cx, cy) = centre(r);
     (0..SLOTS)
+        .filter(|&i| offered[i])
         .min_by_key(|&i| {
             let (x, y) = centre(&rects[i]);
             (x - cx).pow(2) + (y - cy).pow(2)
@@ -343,6 +383,10 @@ fn nearest_slot(rects: &[RECT; SLOTS], r: &RECT) -> u32 {
 
 /// Button-down: remember what was hit and capture the mouse so the drag keeps working off the panel.
 unsafe fn press(hwnd: HWND, x: i32, y: i32) {
+    // A press never starts on top of an unfinished one, but if it did, clean up first
+    if end_gesture(hwnd) {
+        place(hwnd, false);
+    }
     let _ = SetCapture(hwnd);
     let mut start = POINT::default();
     let _ = GetCursorPos(&mut start);
@@ -354,14 +398,16 @@ unsafe fn press(hwnd: HWND, x: i32, y: i32) {
         origin: POINT { x: r.left, y: r.top },
         active: false,
         work: RECT::default(),
-        guide: HWND::default(),
         rects: [RECT::default(); SLOTS],
+        offered: [true; SLOTS],
         nearest: SLOT.get(),
+        preview: HWND::default(),
+        markers: [HWND::default(); SLOTS],
     }));
 }
 
 unsafe fn mouse_move(hwnd: HWND, x: i32, y: i32) {
-    let Some(mut g) = GESTURE.get() else {
+    let Some(g) = GESTURE.get() else {
         // Hover feedback on the buttons
         let hit = hit_at(hwnd, x, y);
         if hit != HOVER.get() {
@@ -382,71 +428,118 @@ unsafe fn mouse_move(hwnd: HWND, x: i32, y: i32) {
         if (pt.x - g.start.x).abs() < dx && (pt.y - g.start.y).abs() < dy {
             return;
         }
-        begin_drag(hwnd, &mut g);
+        begin_drag(hwnd);
     }
+    // Window calls above and below dispatch messages that may end the gesture (focus loss, Esc):
+    // always work from the live state, and never write a stale copy back
+    let Some(g) = GESTURE.get().filter(|g| g.active) else { return };
     let mut r = RECT::default();
     let _ = GetWindowRect(hwnd, &mut r);
     let (w, h) = (r.right - r.left, r.bottom - r.top);
     let x = (g.origin.x + pt.x - g.start.x).min(g.work.right - w).max(g.work.left);
     let y = (g.origin.y + pt.y - g.start.y).min(g.work.bottom - h).max(g.work.top);
     let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-    let now = nearest_slot(&g.rects, &RECT { left: x, top: y, right: x + w, bottom: y + h });
+    let Some(mut g) = GESTURE.get() else { return };
+    let now = nearest_slot(&g.rects, &g.offered, &RECT { left: x, top: y, right: x + w, bottom: y + h });
     if now != g.nearest {
+        let old = g.nearest;
         g.nearest = now;
-        if !g.guide.is_invalid() {
-            let _ = InvalidateRect(Some(g.guide), None, false);
+        GESTURE.set(Some(g));
+        // The old nearest slot gets its dot back; the new one is covered by the preview
+        if !g.markers[old as usize].is_invalid() {
+            let _ = ShowWindow(g.markers[old as usize], SW_SHOWNOACTIVATE);
+        }
+        if !g.markers[now as usize].is_invalid() {
+            let _ = ShowWindow(g.markers[now as usize], SW_HIDE);
+        }
+        if !g.preview.is_invalid() {
+            let r = g.rects[now as usize];
+            let _ = SetWindowPos(g.preview, None, r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
-    GESTURE.set(Some(g));
 }
 
-/// The mouse moved far enough: work out where the panel would land in each slot and outline them.
-unsafe fn begin_drag(hwnd: HWND, g: &mut Gesture) {
-    let mut r = RECT::default();
-    let _ = GetWindowRect(hwnd, &mut r);
-    let (w, h) = (r.right - r.left, r.bottom - r.top);
-    let a = area(scale(), w, h);
-    for (i, slot) in g.rects.iter_mut().enumerate() {
-        let (x, y) = slot_pos(&a, i as u32);
-        *slot = RECT { left: x, top: y, right: x + w, bottom: y + h };
-    }
-    g.work = a.work;
-    g.nearest = nearest_slot(&g.rects, &r);
-    g.active = true;
-    // The guide paints from GESTURE, possibly as soon as it is shown, so publish it first
-    GESTURE.set(Some(*g));
-
-    let Ok(m) = GetModuleHandleW(None) else { return };
-    let guide = CreateWindowExW(
+/// A click-through, translucent topmost tool window. Created hidden.
+unsafe fn guide_window(class: PCWSTR, r: &RECT, alpha: u8) -> HWND {
+    let Ok(m) = GetModuleHandleW(None) else { return HWND::default() };
+    let hwnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
-        GUIDE_CLASS,
+        class,
         w!(""),
         WS_POPUP,
-        a.work.left,
-        a.work.top,
-        a.work.right - a.work.left,
-        a.work.bottom - a.work.top,
+        r.left,
+        r.top,
+        r.right - r.left,
+        r.bottom - r.top,
         None,
         None,
         Some(m.into()),
         None,
     );
-    if let Ok(guide) = guide {
-        let _ = SetLayeredWindowAttributes(guide, KEY, 0, LWA_COLORKEY);
-        g.guide = guide;
-        GESTURE.set(Some(*g));
-        let _ = ShowWindow(guide, SW_SHOWNOACTIVATE);
-        // The guide is topmost too and was created last: put the panel back above it
-        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
+    let Ok(hwnd) = hwnd else { return HWND::default() };
+    let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+    hwnd
 }
 
-/// Drop the current press or drag: destroy the guide and release the mouse. Returns whether a drag
-/// was in progress, in which case the panel is not where it belongs.
+/// The mouse moved far enough: work out where the panel would land in each slot, then show a
+/// translucent preview at the nearest one and a dot in each of the others.
+unsafe fn begin_drag(hwnd: HWND) {
+    let Some(mut g) = GESTURE.get() else { return };
+    let s = scale();
+    let mut r = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut r);
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    let a = area(s, w, h);
+    for (i, slot) in g.rects.iter_mut().enumerate() {
+        let (x, y) = slot_pos(&a, i as u32);
+        *slot = RECT { left: x, top: y, right: x + w, bottom: y + h };
+    }
+    // A corner that mostly overlaps slot 0 (a bar near it, a small screen) would be a second,
+    // confusingly close target: slot 0 wins
+    for i in 1..SLOTS {
+        g.offered[i] = overlap(&g.rects[0], &g.rects[i]) * 2 <= w as i64 * h as i64;
+    }
+    g.work = a.work;
+    g.nearest = nearest_slot(&g.rects, &g.offered, &r);
+    g.active = true;
+
+    g.preview = guide_window(PREVIEW_CLASS, &g.rects[g.nearest as usize], PREVIEW_ALPHA);
+    if !g.preview.is_invalid() {
+        round_corners(g.preview, DWMWCP_ROUND);
+    }
+    let d = px(MARKER_SIZE, s);
+    for i in (0..SLOTS).filter(|&i| g.offered[i]) {
+        let (cx, cy) = centre(&g.rects[i]);
+        let m = RECT { left: cx as i32 - d / 2, top: cy as i32 - d / 2, right: cx as i32 - d / 2 + d, bottom: cy as i32 - d / 2 + d };
+        g.markers[i] = guide_window(MARKER_CLASS, &m, MARKER_ALPHA);
+        if !g.markers[i].is_invalid() {
+            // Round dot; the system owns the region from here on
+            let _ = SetWindowRgn(g.markers[i], Some(CreateEllipticRgn(0, 0, d + 1, d + 1)), false);
+        }
+    }
+    GESTURE.set(Some(g));
+
+    let show = |w: HWND| {
+        if !w.is_invalid() {
+            let _ = ShowWindow(w, SW_SHOWNOACTIVATE);
+        }
+    };
+    show(g.preview);
+    for i in (0..SLOTS).filter(|&i| i as u32 != g.nearest) {
+        show(g.markers[i]);
+    }
+    // The guide windows are topmost too and were created last: put the panel back above them
+    let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+/// Drop the current press or drag: destroy the guide windows and release the mouse. Returns whether
+/// a drag was in progress, in which case the panel is not where it belongs.
 unsafe fn end_gesture(p: HWND) -> bool {
     let Some(g) = GESTURE.take() else { return false };
-    if !g.guide.is_invalid() {
-        let _ = DestroyWindow(g.guide);
+    for w in std::iter::once(g.preview).chain(g.markers) {
+        if !w.is_invalid() {
+            let _ = DestroyWindow(w);
+        }
     }
     if GetCapture() == p {
         let _ = ReleaseCapture();
@@ -460,7 +553,9 @@ unsafe fn release(hwnd: HWND, x: i32, y: i32) {
     if g.active {
         SLOT.set(g.nearest);
         write_setting(SLOT_VALUE, g.nearest);
-        place(hwnd);
+        place(hwnd, false);
+        // The mouse is wherever the drag ended; the next move tells
+        HOVER.set(Hit::None);
     } else if g.hit != Hit::None && g.hit == hit_at(hwnd, x, y) {
         match g.hit {
             Hit::Pin => set_pinned(!PINNED.get()),
@@ -469,33 +564,48 @@ unsafe fn release(hwnd: HWND, x: i32, y: i32) {
     }
 }
 
-/// Outlines of the slots over the whole work area. Colour-keyed so only the dots show, and
-/// click-through so the drag is never disturbed.
-unsafe extern "system" fn guide_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+unsafe fn fill_rect(hdc: HDC, r: &RECT, color: COLORREF) {
+    let b = CreateSolidBrush(color);
+    FillRect(hdc, r, b);
+    let _ = DeleteObject(b.into());
+}
+
+/// Where the panel will land: accent fill with a lighter edge, at the window's uniform translucency.
+unsafe extern "system" fn preview_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
             let mut rc = RECT::default();
             let _ = GetClientRect(hwnd, &mut rc);
-            let mut win = RECT::default();
-            let _ = GetWindowRect(hwnd, &mut win);
-            let c = Canvas::new(rc.right, rc.bottom);
-            c.fill(0, 0, c.w, c.h, KEY);
-            if let Some(g) = GESTURE.get().filter(|g| g.active) {
-                let s = scale();
-                let local = |r: &RECT| RECT {
-                    left: r.left - win.left,
-                    top: r.top - win.top,
-                    right: r.right - win.left,
-                    bottom: r.bottom - win.top,
-                };
-                for r in g.rects.iter().enumerate().filter(|&(i, _)| i as u32 != g.nearest).map(|(_, r)| r) {
-                    c.dotted_rect(&local(r), px(2.0, s), GUIDE_DIM);
-                }
-                c.dotted_rect(&local(&g.rects[g.nearest as usize]), px(4.0, s), GUIDE_NEAREST);
-            }
-            c.blit(hdc);
+            let e = px(2.0, scale());
+            fill_rect(hdc, &rc, PREVIEW_EDGE);
+            fill_rect(hdc, &RECT { left: e, top: e, right: rc.right - e, bottom: rc.bottom - e }, PREVIEW_FILL);
+            let _ = EndPaint(hwnd, &ps);
+        }
+        WM_ERASEBKGND => return LRESULT(1),
+        _ => return DefWindowProcW(hwnd, msg, wp, lp),
+    }
+    LRESULT(0)
+}
+
+/// A slot the panel can go to: a light dot with a dark rim, clipped round by the window region.
+unsafe extern "system" fn marker_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            let mut rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rc);
+            let e = px(2.0, scale());
+            fill_rect(hdc, &rc, MARKER_EDGE);
+            let b = CreateSolidBrush(MARKER_FILL);
+            let old_b = SelectObject(hdc, b.into());
+            let old_p = SelectObject(hdc, GetStockObject(NULL_PEN));
+            let _ = Ellipse(hdc, e, e, rc.right - e + 1, rc.bottom - e + 1);
+            SelectObject(hdc, old_p);
+            SelectObject(hdc, old_b);
+            let _ = DeleteObject(b.into());
             let _ = EndPaint(hwnd, &ps);
         }
         WM_ERASEBKGND => return LRESULT(1),
@@ -752,7 +862,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // Esc cancels a drag in progress first, then closes
             if GESTURE.get().is_some() {
                 if end_gesture(hwnd) {
-                    place(hwnd);
+                    place(hwnd, false);
                 }
             } else {
                 hide(hwnd);
@@ -769,13 +879,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_LBUTTONUP => {
             let (x, y) = mouse_xy(lp);
             release(hwnd, x, y);
-            HOVER.set(hit_at(hwnd, x, y));
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
         // Capture taken away (another window, a dialog): give up the drag and snap back
         WM_CAPTURECHANGED => {
             if end_gesture(hwnd) {
-                place(hwnd);
+                place(hwnd, false);
             }
         }
         WM_MOUSELEAVE => {

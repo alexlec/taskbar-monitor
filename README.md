@@ -41,9 +41,10 @@ The exe is not code-signed yet, so SmartScreen may warn on first run: click **Mo
 | Action | Result |
 |---|---|
 | Left-click the bar | Open / close the detail panel |
-| Esc or click elsewhere | Close the detail panel (unless pinned) |
-| Pin button in the panel's top-right corner, or **Keep details panel open** in the menu | Keep the panel open when you click elsewhere. A pinned panel closes with Esc, its close button or another click on the bar, and hides while the bar does (e.g. a fullscreen video) |
-| Drag the panel | Dotted outlines show the five places it can go (above the bar, or one of the four screen corners); it snaps to the nearest one on release. Esc cancels |
+| Click elsewhere | Close the detail panel, unless it is pinned |
+| Esc (while the panel has focus) | Close the detail panel |
+| Pin button in the panel's top-right corner, or **Keep details panel open** in the menu | Keep the panel open when you click elsewhere. A pinned panel closes with its close button, with Esc while it has focus, or with another click on the bar, and it hides while a fullscreen app hides the bar |
+| Drag the panel | A translucent preview shows where it will land and dots mark the other places it can go (above the bar, or one of the screen corners); it snaps to the nearest one on release. Esc cancels |
 | Right-click the bar | Menu: check for updates, metrics shown on the taskbar, position, keep details panel open, start with Windows, language, exit |
 
 ![Right-click menu](docs/menu.png)

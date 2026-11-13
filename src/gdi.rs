@@ -146,32 +146,6 @@ impl Canvas {
         }
     }
 
-    /// Dotted rectangle outline of thickness `t` drawn inward from the edges. Made of small squares
-    /// because GDI's PS_DOT pen only works at width 1.
-    pub fn dotted_rect(&self, r: &RECT, t: i32, color: COLORREF) {
-        let t = t.max(1);
-        let (w, h) = (r.right - r.left, r.bottom - r.top);
-        if w <= 0 || h <= 0 {
-            return;
-        }
-        unsafe {
-            let b = CreateSolidBrush(color);
-            let dot = |x: i32, y: i32| {
-                FillRect(self.dc, &RECT { left: x, top: y, right: (x + t).min(r.right), bottom: (y + t).min(r.bottom) }, b);
-            };
-            let step = (2 * t) as usize;
-            for x in (r.left..r.right).step_by(step) {
-                dot(x, r.top);
-                dot(x, r.bottom - t);
-            }
-            for y in (r.top..r.bottom).step_by(step) {
-                dot(r.left, y);
-                dot(r.right - t, y);
-            }
-            let _ = DeleteObject(b.into());
-        }
-    }
-
     pub fn dot(&self, x: i32, y: i32, d: i32, color: COLORREF) {
         unsafe {
             let brush = CreateSolidBrush(color);

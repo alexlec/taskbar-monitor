@@ -341,13 +341,19 @@ fn load_color(v: f32) -> COLORREF {
 pub fn update_position(hwnd: HWND) {
     unsafe {
         let visible = IsWindowVisible(hwnd).as_bool();
-        let Some((tray, (x, y, w, h))) = target_rect() else {
-            if visible {
-                let _ = ShowWindow(hwnd, SW_HIDE);
+        let (tray, (x, y, w, h)) = match target_rect() {
+            Ok(t) => t,
+            Err(why) => {
+                if visible {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                }
+                // A pinned panel goes with the bar until it is back, except when the taskbar is only
+                // tucked away: it is still on screen and still wanted, and the panel doesn't need the bar
+                if why != Away::AutoHidden {
+                    popup::on_bar_hidden();
+                }
+                return;
             }
-            // A pinned panel goes with the bar until it is back
-            popup::on_bar_hidden();
-            return;
         };
         let mut flags = SWP_NOACTIVATE;
         if !visible {
@@ -423,20 +429,36 @@ unsafe fn is_above(a: HWND, b: HWND) -> bool {
     false
 }
 
-unsafe fn target_rect() -> Option<(HWND, (i32, i32, i32, i32))> {
-    let tray = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()).ok()?;
-    if !IsWindowVisible(tray).as_bool() || fullscreen_app_active(tray) {
-        return None;
+/// Why the bar has nowhere to be.
+#[derive(PartialEq, Eq)]
+enum Away {
+    /// No visible taskbar, e.g. Explorer is restarting.
+    NoTaskbar,
+    Fullscreen,
+    /// Auto-hide has tucked the taskbar away.
+    AutoHidden,
+}
+
+/// The taskbar and where the bar goes on it (x, y, width, height).
+type Target = (HWND, (i32, i32, i32, i32));
+
+unsafe fn target_rect() -> std::result::Result<Target, Away> {
+    let tray = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()).map_err(|_| Away::NoTaskbar)?;
+    if !IsWindowVisible(tray).as_bool() {
+        return Err(Away::NoTaskbar);
+    }
+    if fullscreen_app_active(tray) {
+        return Err(Away::Fullscreen);
     }
     let mut tr = RECT::default();
-    GetWindowRect(tray, &mut tr).ok()?;
+    GetWindowRect(tray, &mut tr).map_err(|_| Away::NoTaskbar)?;
 
     // Auto-hidden taskbar is tucked away: hide too
     let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
     if GetMonitorInfoW(MonitorFromWindow(tray, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool()
         && tr.bottom > mi.rcMonitor.bottom + 1
     {
-        return None;
+        return Err(Away::AutoHidden);
     }
 
     let scale = GetDpiForWindow(tray) as f32 / 96.0;
@@ -448,7 +470,7 @@ unsafe fn target_rect() -> Option<(HWND, (i32, i32, i32, i32))> {
         // The Widgets button (on unless turned off) takes the left edge of a centered taskbar
         let widgets = read_dword(EXPLORER_KEY, w!("TaskbarDa")) != Some(0);
         let x = tr.left + px(if widgets { 220.0 } else { 8.0 }, scale);
-        return Some((tray, (x, y, l.width, h)));
+        return Ok((tray, (x, y, l.width, h)));
     }
     let right = match FindWindowExW(Some(tray), None, w!("TrayNotifyWnd"), PCWSTR::null()) {
         Ok(n) => {
@@ -458,7 +480,7 @@ unsafe fn target_rect() -> Option<(HWND, (i32, i32, i32, i32))> {
         }
         Err(_) => tr.right - px(300.0, scale),
     };
-    Some((tray, (right - px(8.0, scale) - l.width, y, l.width, h)))
+    Ok((tray, (right - px(8.0, scale) - l.width, y, l.width, h)))
 }
 
 /// Whether a fullscreen app (game, video) is active on the taskbar's monitor.
@@ -528,10 +550,10 @@ unsafe fn paint(hwnd: HWND) {
 }
 
 unsafe fn context_menu(hwnd: HWND) {
-    // The menu is owned by the panel and the panel re-asserts topmost every second, so it can't stay
-    // open under the menu. A pinned one is brought back afterwards.
-    let was_open = popup::close();
     let Ok(menu) = CreatePopupMenu() else { return };
+    // The menu is owned by the panel, which must not stay topmost over it, so close it now (only once
+    // the menu exists, so an early return can't leave it closed). It comes back after the menu.
+    let was_open = popup::close();
     let latest = latest();
     let v = update::VERSION;
     let update_label = match &latest {
@@ -633,9 +655,9 @@ unsafe fn context_menu(hwnd: HWND) {
         ID_EXIT => quit(hwnd),
         _ => {}
     }
-    // Pinning from the menu while the panel was open keeps it open; unpinning leaves it closed,
-    // like any unpinned panel the menu closes
-    if was_open && popup::pinned() && cmd.0 as usize != ID_EXIT {
+    // The panel button leaves the panel open when it is toggled, so the menu item does too; any other
+    // command only brings back a pinned panel (an unpinned one is closed by the menu, as always)
+    if was_open && cmd.0 as usize != ID_EXIT && (popup::pinned() || cmd.0 as usize == ID_PIN) {
         popup::reopen();
     }
 }
