@@ -25,9 +25,10 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::gdi::{px, rgb, round_corners, Canvas, Font};
+use crate::gdi::{px, round_corners, Canvas, Font};
 use crate::i18n::{self, Choice};
 use crate::package::packaged;
+use crate::theme::{self, Surface, Theme};
 use crate::{autostart, popup, update, with_monitor};
 
 const CLASS: PCWSTR = w!("TaskbarMonitor.Overlay");
@@ -59,22 +60,19 @@ pub const WM_APP_RECREATE: u32 = WM_APP + 3;
 /// Appbar notifications from the shell. wParam: ABN_* code.
 const WM_APP_APPBAR: u32 = WM_APP + 4;
 
-const BG: COLORREF = rgb(0x1c, 0x1c, 0x1c);
-const LABEL: COLORREF = rgb(0xb4, 0xb4, 0xb4);
-const VALUE: COLORREF = rgb(0xf2, 0xf2, 0xf2);
-const WARN: COLORREF = rgb(0xff, 0xd1, 0x66);
-const HOT: COLORREF = rgb(0xff, 0x6b, 0x6b);
-const UPDATE_DOT: COLORREF = rgb(0x4f, 0xa3, 0xff);
-
 const LABELS: [&str; 4] = ["CPU", "GPU", "VRAM", "RAM"];
 const ID_SHOW: usize = 120; // + index into LABELS
 const ID_POS_RIGHT: usize = 130;
 const ID_POS_LEFT: usize = 131;
+const ID_THEME: usize = 140; // + index into THEMES
+const ID_BAR_OPACITY: usize = 150; // + index into Surface::Bar.levels()
+const ID_PANEL_OPACITY: usize = 170; // + index into Surface::Panel.levels()
+const THEMES: [Theme; 4] = [Theme::Auto, Theme::Dark, Theme::Light, Theme::Custom];
 
 /// Which metrics are on the bar, one bit per entry of LABELS. Stored in
 /// HKCU\Software\TaskbarMonitor\Metrics; defaults to CPU, GPU and RAM.
 const DEFAULT_SHOWN: u32 = 0b1011;
-const SETTINGS_KEY: PCWSTR = w!("Software\\TaskbarMonitor");
+pub const SETTINGS_KEY: PCWSTR = w!("Software\\TaskbarMonitor");
 const SHOWN_VALUE: PCWSTR = w!("Metrics");
 /// Where the bar sits on the taskbar: 0 = right, next to the notification area; 1 = left edge.
 const POSITION_VALUE: PCWSTR = w!("Position");
@@ -86,7 +84,7 @@ thread_local! {
     static LEFT: Cell<bool> = Cell::new(read_dword(SETTINGS_KEY, POSITION_VALUE) == Some(1));
 }
 
-fn read_dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
+pub fn read_dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
     let mut v = 0u32;
     let mut size = 4u32;
     let r = unsafe {
@@ -103,7 +101,7 @@ fn read_dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
     (r == ERROR_SUCCESS).then_some(v)
 }
 
-fn write_setting(name: PCWSTR, v: u32) {
+pub fn write_setting(name: PCWSTR, v: u32) {
     unsafe {
         let _ = RegSetKeyValueW(HKEY_CURRENT_USER, SETTINGS_KEY, name, REG_DWORD.0, Some(&v as *const u32 as _), 4);
     }
@@ -159,7 +157,7 @@ pub unsafe fn create(hinst: HINSTANCE) -> Result<HWND> {
         Some(hinst),
         None,
     )?;
-    SetLayeredWindowAttributes(hwnd, COLORREF(0), 245, LWA_ALPHA)?;
+    Surface::Bar.apply(hwnd);
     round_corners(hwnd, DWMWCP_ROUNDSMALL);
     TASKBAR_CREATED.set(RegisterWindowMessageW(w!("TaskbarCreated")));
     SetTimer(Some(hwnd), TIMER_TICK, 1000, None);
@@ -323,13 +321,13 @@ fn layout(scale: f32) -> Layout {
     Layout { pad, gap_label, gap_item, label_w, value_w, width }
 }
 
-fn load_color(v: f32) -> COLORREF {
+fn load_color(v: f32, p: &theme::Palette) -> COLORREF {
     if v >= 85.0 {
-        HOT
+        p.hot
     } else if v >= 60.0 {
-        WARN
+        p.warn
     } else {
-        VALUE
+        p.text
     }
 }
 
@@ -490,9 +488,10 @@ unsafe fn paint(hwnd: HWND) {
     let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
     let l = layout(scale);
 
+    let p = theme::palette();
     let f = font(scale);
     let c = Canvas::new(rc.right, rc.bottom);
-    c.fill(0, 0, c.w, c.h, BG);
+    c.fill(0, 0, c.w, c.h, p.bar_bg);
     c.font(&f);
 
     let vals = with_monitor(|m| {
@@ -504,18 +503,18 @@ unsafe fn paint(hwnd: HWND) {
     let y = (c.h - c.measure("0").1) / 2;
     let mut x = l.pad;
     for (i, label) in LABELS.iter().enumerate().filter(|&(i, _)| shown(i)) {
-        c.text(x, y, label, LABEL);
+        c.text(x, y, label, p.bar_label);
         x += l.label_w[i] + l.gap_label + l.value_w;
         match vals[i] {
-            Some(v) => c.text_right(x, y, &format!("{v:.0}%"), load_color(v)),
-            None => c.text_right(x, y, "–", LABEL),
+            Some(v) => c.text_right(x, y, &format!("{v:.0}%"), load_color(v, &p)),
+            None => c.text_right(x, y, "–", p.bar_label),
         }
         x += l.gap_item;
     }
     if latest().is_some() {
         // Update-available dot
         let d = px(6.0, scale);
-        c.dot(c.w - d - px(4.0, scale), px(4.0, scale), d, UPDATE_DOT);
+        c.dot(c.w - d - px(4.0, scale), px(4.0, scale), d, p.update_dot);
     }
     c.blit(hdc);
     let _ = EndPaint(hwnd, &ps);
@@ -559,6 +558,37 @@ unsafe fn context_menu(hwnd: HWND) {
         item(sub, MF_STRING | check(!left), ID_POS_RIGHT, tr!("Right, next to the notification area", "Bên phải, cạnh khay hệ thống"));
         item(sub, MF_STRING | check(left) | left_ok, ID_POS_LEFT, tr!("Left edge of the taskbar", "Mép trái taskbar"));
         item(menu, MF_POPUP, sub.0 as usize, tr!("Position", "Vị trí"));
+    }
+    if let Ok(sub) = CreatePopupMenu() {
+        let current = theme::theme();
+        let names = [
+            tr!("Follow Windows", "Theo Windows"),
+            tr!("Dark", "Tối"),
+            tr!("Light", "Sáng"),
+            tr!("Custom background color…", "Màu nền tùy chọn…"),
+        ];
+        for (i, (t, name)) in THEMES.into_iter().zip(names).enumerate() {
+            item(sub, MF_STRING | check(current == t), ID_THEME + i, name);
+        }
+        item(sub, MF_SEPARATOR, 0, "");
+        for (surface, base, title) in [
+            (Surface::Bar, ID_BAR_OPACITY, tr!("Bar opacity", "Độ mờ đục của thanh")),
+            (Surface::Panel, ID_PANEL_OPACITY, tr!("Panel opacity", "Độ mờ đục của bảng chi tiết")),
+        ] {
+            if let Ok(opacity) = CreatePopupMenu() {
+                let (now, default) = (surface.percent(), surface.default_percent());
+                for (i, &pct) in surface.levels().iter().enumerate() {
+                    let text = if pct == default {
+                        tr!(format!("{pct}% (default)"), format!("{pct}% (mặc định)"))
+                    } else {
+                        format!("{pct}%")
+                    };
+                    item(opacity, MF_STRING | check(pct == now), base + i, &text);
+                }
+                item(sub, MF_POPUP, opacity.0 as usize, title);
+            }
+        }
+        item(menu, MF_POPUP, sub.0 as usize, tr!("Appearance", "Giao diện"));
     }
     item(menu, MF_STRING | check(autostart::enabled()), ID_AUTOSTART, tr!("Start with Windows", "Khởi động cùng Windows"));
     if let Ok(sub) = CreatePopupMenu() {
@@ -612,6 +642,17 @@ unsafe fn context_menu(hwnd: HWND) {
             write_setting(POSITION_VALUE, LEFT.get() as u32);
             update_position(hwnd);
         }
+        id if (ID_THEME..ID_THEME + THEMES.len()).contains(&id) => match THEMES[id - ID_THEME] {
+            // Cancelling the colour dialog keeps the current theme
+            Theme::Custom => _ = theme::pick_custom(host()),
+            t => theme::set_theme(t),
+        },
+        id if (ID_BAR_OPACITY..ID_BAR_OPACITY + Surface::Bar.levels().len()).contains(&id) => {
+            Surface::Bar.set_percent(Surface::Bar.levels()[id - ID_BAR_OPACITY]);
+        }
+        id if (ID_PANEL_OPACITY..ID_PANEL_OPACITY + Surface::Panel.levels().len()).contains(&id) => {
+            Surface::Panel.set_percent(Surface::Panel.levels()[id - ID_PANEL_OPACITY]);
+        }
         id @ (ID_LANG_AUTO | ID_LANG_EN | ID_LANG_VI) => {
             i18n::set_choice(match id {
                 ID_LANG_EN => Choice::En,
@@ -642,7 +683,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE),
         WM_LBUTTONUP => popup::toggle(),
         WM_RBUTTONUP => context_menu(hwnd),
-        WM_DPICHANGED | WM_DISPLAYCHANGE | WM_SETTINGCHANGE => update_position(hwnd),
+        WM_DPICHANGED | WM_DISPLAYCHANGE => update_position(hwnd),
+        WM_SETTINGCHANGE => {
+            theme::on_setting_change(lp);
+            update_position(hwnd);
+        }
         WM_APP_APPBAR if wp.0 as u32 == ABN_FULLSCREENAPP => update_position(hwnd),
         WM_DESTROY => {
             appbar(hwnd, ABM_REMOVE);

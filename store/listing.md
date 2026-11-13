@@ -40,7 +40,7 @@ Click the bar for a detail panel:
 • GPU: 3D, copy and video load for every graphics card (NVIDIA, AMD and Intel, including laptops with two GPUs), VRAM and shared memory
 • System: processes, threads, handles and up time
 
-Right-click the bar to choose which metrics to show (CPU, GPU, VRAM, RAM), put the bar on the left or right of the taskbar, start with Windows, or switch between English and Vietnamese.
+Right-click the bar to choose which metrics to show (CPU, GPU, VRAM, RAM), put the bar on the left or right of the taskbar, pick a light, dark or custom color theme (it follows Windows by default) and adjust the opacity, start with Windows, or switch between English and Vietnamese.
 
 Light and out of the way:
 • A small native app (under 1 MB) that uses well under 1% of one CPU core
@@ -63,6 +63,7 @@ Same numbers as Task Manager
 Detail panel with per-thread CPU load and 60-second graphs
 Works with NVIDIA, AMD and Intel graphics, including multi-GPU laptops
 Choose which metrics to show and where the bar sits
+Light, dark or custom colors, with adjustable opacity
 Hides automatically for fullscreen games and videos
 English and Vietnamese interface
 ```

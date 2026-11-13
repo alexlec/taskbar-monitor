@@ -12,22 +12,13 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::gdi::{blend, px, rgb, round_corners, Canvas, Font};
+use crate::gdi::{blend, px, round_corners, Canvas, Font};
 use crate::metrics::{Monitor, Ring, ENGINE_LABELS};
+use crate::theme::{self, Palette, Surface};
 use crate::{with_monitor, OVERLAY, POPUP};
 
 const CLASS: PCWSTR = w!("TaskbarMonitor.Popup");
 
-const BG: COLORREF = rgb(0x20, 0x20, 0x20);
-const PANEL: COLORREF = rgb(0x2a, 0x2a, 0x2a);
-const TRACK: COLORREF = rgb(0x3a, 0x3a, 0x3a);
-const DIV: COLORREF = rgb(0x34, 0x34, 0x34);
-const TEXT: COLORREF = rgb(0xf2, 0xf2, 0xf2);
-const DIM: COLORREF = rgb(0x9a, 0x9a, 0x9a);
-const C_CPU: COLORREF = rgb(0x4f, 0xa3, 0xff);
-const C_RAM: COLORREF = rgb(0xb0, 0x7c, 0xff);
-const C_GPU: COLORREF = rgb(0x3d, 0xd6, 0x8c);
-const C_VRAM: COLORREF = rgb(0xf5, 0xa5, 0x24);
 
 const COL_W: f32 = 300.0;
 const GUTTER: f32 = 32.0;
@@ -48,7 +39,7 @@ pub unsafe fn create(hinst: HINSTANCE) -> Result<HWND> {
     };
     RegisterClassExW(&wc);
     let hwnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
         CLASS,
         w!("Taskbar Monitor"),
         WS_POPUP,
@@ -61,6 +52,7 @@ pub unsafe fn create(hinst: HINSTANCE) -> Result<HWND> {
         Some(hinst),
         None,
     )?;
+    Surface::Panel.apply(hwnd);
     round_corners(hwnd, DWMWCP_ROUND);
     Ok(hwnd)
 }
@@ -151,27 +143,28 @@ unsafe fn paint(hwnd: HWND) {
 /// Draw all content and return the height needed. Call with a 1px-tall canvas to measure.
 fn draw(c: &Canvas, s: f32, m: &Monitor) -> i32 {
     let snap = &m.snap;
-    c.fill(0, 0, c.w, c.h, BG);
+    let pal = theme::palette();
+    c.fill(0, 0, c.w, c.h, pal.bg);
     let pad = px(PAD, s);
     let col_w = px(COL_W, s);
-    let mut d = Doc::new(c, s, pad, col_w);
+    let mut d = Doc::new(c, s, pad, col_w, pal);
 
     // Left column
-    d.header("CPU", &pct(snap.cpu), C_CPU);
+    d.header("CPU", &pct(snap.cpu), pal.cpu);
     d.line(&m.cpu_name, "");
     let ghz = if snap.cpu_mhz > 0.0 { format!("{:.2} GHz", snap.cpu_mhz / 1000.0) } else { String::new() };
     let n = snap.cores.len();
     d.line(&tr!(format!("{n} threads"), format!("{n} luồng")), &ghz);
-    d.spark(&m.cpu_hist, C_CPU, None);
+    d.spark(&m.cpu_hist, pal.cpu, None);
     d.cores(&snap.cores);
     d.divider();
-    d.header("RAM", &pct(snap.ram_pct()), C_RAM);
+    d.header("RAM", &pct(snap.ram_pct()), pal.ram);
     d.line(tr!("In use", "Đang dùng"), &format!("{} / {} GB", gb(snap.ram_used), gb(snap.ram_total)));
     d.line(tr!("Available", "Còn trống"), &format!("{} GB", gb(snap.ram_total.saturating_sub(snap.ram_used))));
     d.line(tr!("Committed", "Bộ nhớ cam kết"), &format!("{} / {} GB", gb(snap.commit_used), gb(snap.commit_limit)));
-    d.spark(&m.ram_hist, C_RAM, None);
+    d.spark(&m.ram_hist, pal.ram, None);
     d.divider();
-    d.header(tr!("System", "Hệ thống"), "", TEXT);
+    d.header(tr!("System", "Hệ thống"), "", pal.text);
     d.line(tr!("Processes", "Tiến trình"), &thousands(snap.processes as u64));
     d.line(tr!("Threads", "Luồng"), &thousands(snap.threads as u64));
     d.line(tr!("Handles", "Handle"), &thousands(snap.handles as u64));
@@ -182,7 +175,7 @@ fn draw(c: &Canvas, s: f32, m: &Monitor) -> i32 {
     d.x = pad + col_w + px(GUTTER, s);
     d.y = pad;
     if snap.gpus.is_empty() {
-        d.header("GPU", "–", DIM);
+        d.header("GPU", "–", pal.dim);
         d.line(tr!("GPU information unavailable", "Không đọc được thông tin GPU"), "");
     }
     for (i, g) in snap.gpus.iter().enumerate() {
@@ -190,21 +183,21 @@ fn draw(c: &Canvas, s: f32, m: &Monitor) -> i32 {
             d.divider();
         }
         let title = if snap.gpus.len() > 1 { format!("GPU {i}") } else { "GPU".into() };
-        d.header(&title, &pct(g.util), C_GPU);
+        d.header(&title, &pct(g.util), pal.gpu);
         d.line(&g.name, "");
         for &(k, v) in &g.engines {
-            d.meter(ENGINE_LABELS[k], v, C_GPU);
+            d.meter(ENGINE_LABELS[k], v, pal.gpu);
         }
         d.line("VRAM", &format!("{} / {} GB", gb(g.vram_used), gb(g.vram_total)));
-        d.thin_bar(g.vram_pct(), C_VRAM);
+        d.thin_bar(g.vram_pct(), pal.vram);
         d.line(tr!("Shared memory", "Bộ nhớ dùng chung"), &format!("{} GB", gb(g.shared_used)));
-        d.spark(&m.gpu_hist[i], C_GPU, Some((&m.vram_hist[i], C_VRAM)));
+        d.spark(&m.gpu_hist[i], pal.gpu, Some((&m.vram_hist[i], pal.vram)));
     }
     let right_h = d.y;
 
     let h = left_h.max(right_h) + pad;
     // Column divider
-    c.fill(pad + col_w + px(GUTTER / 2.0, s), pad, px(1.0, s).max(1), h - 2 * pad, DIV);
+    c.fill(pad + col_w + px(GUTTER / 2.0, s), pad, px(1.0, s).max(1), h - 2 * pad, pal.div);
     h
 }
 
@@ -212,6 +205,7 @@ fn draw(c: &Canvas, s: f32, m: &Monitor) -> i32 {
 struct Doc<'a> {
     c: &'a Canvas,
     s: f32,
+    pal: Palette,
     x: i32,
     y: i32,
     w: i32,
@@ -221,10 +215,11 @@ struct Doc<'a> {
 }
 
 impl<'a> Doc<'a> {
-    fn new(c: &'a Canvas, s: f32, pad: i32, w: i32) -> Self {
+    fn new(c: &'a Canvas, s: f32, pad: i32, w: i32, pal: Palette) -> Self {
         Self {
             c,
             s,
+            pal,
             x: pad,
             y: pad,
             w,
@@ -240,7 +235,7 @@ impl<'a> Doc<'a> {
 
     fn header(&mut self, label: &str, value: &str, color: COLORREF) {
         self.c.font(&self.title);
-        self.c.text(self.x, self.y + self.p(5.0), label, TEXT);
+        self.c.text(self.x, self.y + self.p(5.0), label, self.pal.text);
         self.c.font(&self.big);
         self.c.text_right(self.x + self.w, self.y, value, color);
         self.y += self.p(30.0);
@@ -250,32 +245,32 @@ impl<'a> Doc<'a> {
     fn line(&mut self, left: &str, right: &str) {
         self.c.font(&self.body);
         let rw = if right.is_empty() { 0 } else { self.c.measure(right).0 + self.p(8.0) };
-        self.c.text_fit(self.x, self.y, self.w - rw, self.p(18.0), left, DIM);
+        self.c.text_fit(self.x, self.y, self.w - rw, self.p(18.0), left, self.pal.dim);
         if !right.is_empty() {
-            self.c.text_right(self.x + self.w, self.y, right, TEXT);
+            self.c.text_right(self.x + self.w, self.y, right, self.pal.text);
         }
         self.y += self.p(19.0);
     }
 
     fn meter(&mut self, label: &str, v: f32, color: COLORREF) {
         self.c.font(&self.body);
-        self.c.text(self.x, self.y, label, DIM);
+        self.c.text(self.x, self.y, label, self.pal.dim);
         let (bx, bw, bh) = (self.x + self.p(96.0), self.w - self.p(96.0 + 44.0), self.p(6.0));
-        self.c.bar(bx, self.y + self.p(7.0), bw, bh, v, color, TRACK);
-        self.c.text_right(self.x + self.w, self.y, &pct(v), TEXT);
+        self.c.bar(bx, self.y + self.p(7.0), bw, bh, v, color, self.pal.track);
+        self.c.text_right(self.x + self.w, self.y, &pct(v), self.pal.text);
         self.y += self.p(20.0);
     }
 
     fn thin_bar(&mut self, v: f32, color: COLORREF) {
-        self.c.bar(self.x, self.y + self.p(2.0), self.w, self.p(6.0), v, color, TRACK);
+        self.c.bar(self.x, self.y + self.p(2.0), self.w, self.p(6.0), v, color, self.pal.track);
         self.y += self.p(14.0);
     }
 
     fn spark(&mut self, data: &Ring, color: COLORREF, second: Option<(&Ring, COLORREF)>) {
         let (y, h) = (self.y + self.p(6.0), self.p(44.0));
-        self.c.fill(self.x, y, self.w, h, PANEL);
+        self.c.fill(self.x, y, self.w, h, self.pal.panel);
         let thick = self.p(1.5);
-        self.c.spark(self.x, y, self.w, h, data, color, Some(blend(color, PANEL, 0.22)), thick);
+        self.c.spark(self.x, y, self.w, h, data, color, Some(blend(color, self.pal.panel, 0.22)), thick);
         if let Some((d2, c2)) = second {
             self.c.spark(self.x, y, self.w, h, d2, c2, None, thick);
         }
@@ -296,16 +291,16 @@ impl<'a> Doc<'a> {
         for (i, &v) in cores.iter().enumerate() {
             let bx = self.x + (i % per_row) as i32 * (bw + gap);
             let by = self.y + (i / per_row) as i32 * (bh + gap);
-            self.c.fill(bx, by, bw, bh, TRACK);
+            self.c.fill(bx, by, bw, bh, self.pal.track);
             let fh = (bh as f32 * v / 100.0).round() as i32;
-            self.c.fill(bx, by + bh - fh, bw, fh, C_CPU);
+            self.c.fill(bx, by + bh - fh, bw, fh, self.pal.cpu);
         }
         self.y += rows as i32 * (bh + gap) + self.p(2.0);
     }
 
     fn divider(&mut self) {
         self.y += self.p(10.0);
-        self.c.fill(self.x, self.y, self.w, self.p(1.0).max(1), DIV);
+        self.c.fill(self.x, self.y, self.w, self.p(1.0).max(1), self.pal.div);
         self.y += self.p(12.0);
     }
 }
@@ -352,6 +347,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     match msg {
         WM_PAINT => paint(hwnd),
         WM_ERASEBKGND => return LRESULT(1),
+        WM_SETTINGCHANGE => theme::on_setting_change(lp),
         WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => hide(hwnd),
         WM_KEYDOWN if wp.0 == VK_ESCAPE.0 as usize => hide(hwnd),
         _ => return DefWindowProcW(hwnd, msg, wp, lp),

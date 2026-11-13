@@ -9,6 +9,7 @@ mod metrics;
 mod overlay;
 mod package;
 mod popup;
+mod theme;
 mod update;
 
 use std::cell::{Cell, RefCell};

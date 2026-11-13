@@ -13,6 +13,7 @@ Shows CPU, GPU, VRAM and RAM usage right on the Windows taskbar. Click it for de
 - **Detail panel**: per-thread CPU load, clock speed, RAM and commit charge, 3D / Copy / Video load per GPU, VRAM, and 60-second history graphs.
 - Choose which metrics appear on the bar (CPU, GPU, VRAM, RAM) from the right-click menu. CPU, GPU and RAM are shown by default.
 - Place the bar next to the notification area (default) or at the left edge of the taskbar, which is empty when the taskbar icons are centered.
+- Appearance: follow the Windows light/dark theme (default), force dark or light, or pick your own background color. The bar and the detail panel each have an adjustable opacity (100% to 60%).
 - Values ≥ 60% turn yellow, ≥ 85% turn red.
 - Hides automatically while a game or video is fullscreen.
 - Stays up to date: through the Microsoft Store, or from GitHub Releases for the manual download.
@@ -41,7 +42,7 @@ The exe is not code-signed yet, so SmartScreen may warn on first run: click **Mo
 |---|---|
 | Left-click the bar | Open / close the detail panel |
 | Esc or click elsewhere | Close the detail panel |
-| Right-click the bar | Menu: check for updates, metrics shown on the taskbar, position, start with Windows, language, exit |
+| Right-click the bar | Menu: check for updates, metrics shown on the taskbar, position, appearance, start with Windows, language, exit |
 
 ![Right-click menu](docs/menu.png)
 
