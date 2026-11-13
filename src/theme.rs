@@ -104,6 +104,8 @@ thread_local! {
     static PALETTE: Cell<Option<Palette>> = const { Cell::new(None) };
     /// The colour dialog's 16 custom swatches, kept for the session.
     static SWATCHES: Cell<[COLORREF; 16]> = const { Cell::new([COLORREF(0x00ff_ffff); 16]) };
+    /// The colour dialog is open (modal, but the message loop keeps dispatching to the other windows).
+    static PICKING: Cell<bool> = const { Cell::new(false) };
 }
 
 pub fn theme() -> Theme {
@@ -140,6 +142,11 @@ pub fn palette() -> Palette {
     p
 }
 
+/// Whether the colour dialog is open: clicks on the bar must not open the panel or a second menu.
+pub fn picking() -> bool {
+    PICKING.get()
+}
+
 /// Relative luminance (WCAG), 0 = black, 1 = white.
 fn luminance(c: COLORREF) -> f32 {
     let lin = |shift: u32| {
@@ -153,12 +160,28 @@ fn luminance(c: COLORREF) -> f32 {
     0.2126 * lin(0) + 0.7152 * lin(8) + 0.0722 * lin(16)
 }
 
+/// WCAG contrast ratio between two colours, 1 to 21.
+fn contrast(a: COLORREF, b: COLORREF) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
 /// Palette for a user-chosen background: the light or the dark palette, whichever has the better
 /// contrast with it (black and white are equally contrasted at a luminance of about 0.179), with the
 /// panel surfaces nudged from the background toward the text colour like the built-in palettes do.
+/// A colour that would nearly vanish on the chosen background (contrast under 3:1) falls back to the
+/// text colour.
 fn custom(bg: COLORREF) -> Palette {
     let base = if luminance(bg) > 0.179 { LIGHT } else { DARK };
+    let legible = |c: COLORREF| if contrast(c, bg) < 3.0 { base.text } else { c };
     Palette {
+        warn: legible(base.warn),
+        hot: legible(base.hot),
+        update_dot: legible(base.update_dot),
+        cpu: legible(base.cpu),
+        ram: legible(base.ram),
+        gpu: legible(base.gpu),
+        vram: legible(base.vram),
         bar_bg: bg,
         bg,
         panel: blend(base.text, bg, 0.05),
@@ -172,9 +195,13 @@ fn custom(bg: COLORREF) -> Palette {
 /// only while open, and a change should show at once.
 pub fn invalidate() {
     PALETTE.set(None);
-    unsafe {
-        let _ = InvalidateRect(Some(OVERLAY.get()), None, false);
-        let _ = InvalidateRect(Some(POPUP.get()), None, false);
+    for h in [OVERLAY.get(), POPUP.get()] {
+        // Not created yet: a null handle would repaint the whole desktop
+        if !h.is_invalid() {
+            unsafe {
+                let _ = InvalidateRect(Some(h), None, false);
+            }
+        }
     }
 }
 
@@ -206,7 +233,10 @@ pub fn pick_custom(owner: HWND) -> bool {
         ..Default::default()
     };
     // Modal: the nested message loop keeps the bar ticking
-    if !unsafe { ChooseColorW(&mut cc) }.as_bool() {
+    PICKING.set(true);
+    let ok = unsafe { ChooseColorW(&mut cc) }.as_bool();
+    PICKING.set(false);
+    if !ok {
         return false;
     }
     SWATCHES.set(swatches);
@@ -254,22 +284,24 @@ impl Surface {
         }
     }
 
+    /// The stored opacity, snapped to the nearest menu level so one is always checked and a
+    /// hand-edited value can't make the window invisible.
     pub fn percent(self) -> u32 {
-        // A hand-edited value must not make the window invisible
-        read_dword(crate::overlay::SETTINGS_KEY, self.value()).map_or(self.default_percent(), |v| v.clamp(20, 100))
+        match read_dword(crate::overlay::SETTINGS_KEY, self.value()) {
+            Some(v) => self.levels().iter().copied().min_by_key(|l| l.abs_diff(v)).unwrap_or(100),
+            None => self.default_percent(),
+        }
     }
 
-    /// Push the stored opacity to the window. Both windows are layered; the bar is recreated at
-    /// times, so this also runs from its `create`.
-    pub fn apply(self, hwnd: HWND) {
+    /// Push the stored opacity to the window. Both windows are layered (and invisible until they
+    /// have attributes); the bar is recreated at times, so this also runs from its `create`.
+    pub fn apply(self, hwnd: HWND) -> windows::core::Result<()> {
         let alpha = ((self.percent() * 255 + 50) / 100) as u8;
-        unsafe {
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
-        }
+        unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA) }
     }
 
     pub fn set_percent(self, pct: u32) {
         write_setting(self.value(), pct);
-        self.apply(self.hwnd());
+        let _ = self.apply(self.hwnd());
     }
 }

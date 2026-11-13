@@ -19,7 +19,6 @@ use crate::{with_monitor, OVERLAY, POPUP};
 
 const CLASS: PCWSTR = w!("TaskbarMonitor.Popup");
 
-
 const COL_W: f32 = 300.0;
 const GUTTER: f32 = 32.0;
 const PAD: f32 = 16.0;
@@ -52,12 +51,16 @@ pub unsafe fn create(hinst: HINSTANCE) -> Result<HWND> {
         Some(hinst),
         None,
     )?;
-    Surface::Panel.apply(hwnd);
+    Surface::Panel.apply(hwnd)?;
     round_corners(hwnd, DWMWCP_ROUND);
     Ok(hwnd)
 }
 
 pub fn toggle() {
+    // The colour dialog is open and this window is its (disabled) owner
+    if theme::picking() {
+        return;
+    }
     let p = POPUP.get();
     unsafe {
         if IsWindowVisible(p).as_bool() {

@@ -31,6 +31,7 @@ that started it.
 | `src/overlay.rs` | The bar: placement over the taskbar, z-order fights, right-click menu, settings |
 | `src/popup.rs` | Detail panel (two columns, history graphs) |
 | `src/metrics.rs` | PDH counters (CPU, GPU engines), DXGI adapters/VRAM, memory |
+| `src/theme.rs` | Appearance: `Palette` (dark, light, custom), `palette()` cache, bar/panel opacity |
 | `src/gdi.rs` | Double-buffered GDI drawing helpers, DPI scaling (`px`) |
 | `src/i18n.rs` | English/Vietnamese; `tr!("English", "Tiếng Việt")` for every UI string |
 | `src/update.rs` | GitHub self-update (`.exe.new` / `.exe.old` rename dance) |
@@ -40,7 +41,9 @@ that started it.
 | `.github/workflows/release.yml` | Tag `vX.Y.Z` builds and publishes the GitHub release |
 
 Settings live in `HKCU\Software\TaskbarMonitor`: `Metrics` (bitmask, bit i = `LABELS[i]`, default
-`0b1011`), `Position` (0 right, 1 left), `Language` ("en"/"vi", absent = follow Windows).
+`0b1011`), `Position` (0 right, 1 left), `Language` ("en"/"vi", absent = follow Windows), `Theme`
+(0 follow Windows, 1 dark, 2 light, 3 custom), `CustomColor` (COLORREF), `BarOpacity` (percent,
+default 96 = alpha 245) and `PanelOpacity` (percent, default 100).
 
 ## Rules
 

@@ -157,7 +157,7 @@ pub unsafe fn create(hinst: HINSTANCE) -> Result<HWND> {
         Some(hinst),
         None,
     )?;
-    Surface::Bar.apply(hwnd);
+    Surface::Bar.apply(hwnd)?;
     round_corners(hwnd, DWMWCP_ROUNDSMALL);
     TASKBAR_CREATED.set(RegisterWindowMessageW(w!("TaskbarCreated")));
     SetTimer(Some(hwnd), TIMER_TICK, 1000, None);
@@ -521,6 +521,9 @@ unsafe fn paint(hwnd: HWND) {
 }
 
 unsafe fn context_menu(hwnd: HWND) {
+    if theme::picking() {
+        return;
+    }
     popup::close();
     let Ok(menu) = CreatePopupMenu() else { return };
     let latest = latest();
@@ -644,7 +647,14 @@ unsafe fn context_menu(hwnd: HWND) {
         }
         id if (ID_THEME..ID_THEME + THEMES.len()).contains(&id) => match THEMES[id - ID_THEME] {
             // Cancelling the colour dialog keeps the current theme
-            Theme::Custom => _ = theme::pick_custom(host()),
+            Theme::Custom => {
+                theme::pick_custom(host());
+                // The bar's WM_DESTROY (Explorer restarted meanwhile) posted WM_APP_RECREATE as a
+                // thread message, which the dialog's modal loop discarded: post it again
+                if !IsWindow(Some(hwnd)).as_bool() && !QUITTING.load(Ordering::SeqCst) {
+                    let _ = PostThreadMessageW(GetCurrentThreadId(), WM_APP_RECREATE, WPARAM(0), LPARAM(0));
+                }
+            }
             t => theme::set_theme(t),
         },
         id if (ID_BAR_OPACITY..ID_BAR_OPACITY + Surface::Bar.levels().len()).contains(&id) => {
