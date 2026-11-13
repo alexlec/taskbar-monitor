@@ -40,6 +40,11 @@ pub struct Font(HFONT);
 
 impl Font {
     pub fn new(px: i32, weight: i32) -> Self {
+        Self::face(px, weight, "Segoe UI")
+    }
+
+    /// Same as `new` with another typeface, e.g. "Segoe Fluent Icons" for glyph buttons.
+    pub fn face(px: i32, weight: i32, face: &str) -> Self {
         let mut lf = LOGFONTW {
             lfHeight: -px,
             lfWeight: weight,
@@ -47,7 +52,7 @@ impl Font {
             lfQuality: CLEARTYPE_QUALITY,
             ..Default::default()
         };
-        for (i, c) in "Segoe UI".encode_utf16().enumerate() {
+        for (i, c) in face.encode_utf16().take(lf.lfFaceName.len() - 1).enumerate() {
             lf.lfFaceName[i] = c;
         }
         Font(unsafe { CreateFontIndirectW(&lf) })
@@ -137,6 +142,32 @@ impl Canvas {
         unsafe {
             let b = CreateSolidBrush(color);
             FillRect(self.dc, &RECT { left: x, top: y, right: x + w, bottom: y + h }, b);
+            let _ = DeleteObject(b.into());
+        }
+    }
+
+    /// Dotted rectangle outline of thickness `t` drawn inward from the edges. Made of small squares
+    /// because GDI's PS_DOT pen only works at width 1.
+    pub fn dotted_rect(&self, r: &RECT, t: i32, color: COLORREF) {
+        let t = t.max(1);
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        unsafe {
+            let b = CreateSolidBrush(color);
+            let dot = |x: i32, y: i32| {
+                FillRect(self.dc, &RECT { left: x, top: y, right: (x + t).min(r.right), bottom: (y + t).min(r.bottom) }, b);
+            };
+            let step = (2 * t) as usize;
+            for x in (r.left..r.right).step_by(step) {
+                dot(x, r.top);
+                dot(x, r.bottom - t);
+            }
+            for y in (r.top..r.bottom).step_by(step) {
+                dot(r.left, y);
+                dot(r.right - t, y);
+            }
             let _ = DeleteObject(b.into());
         }
     }

@@ -40,7 +40,8 @@ that started it.
 | `.github/workflows/release.yml` | Tag `vX.Y.Z` builds and publishes the GitHub release |
 
 Settings live in `HKCU\Software\TaskbarMonitor`: `Metrics` (bitmask, bit i = `LABELS[i]`, default
-`0b1011`), `Position` (0 right, 1 left), `Language` ("en"/"vi", absent = follow Windows).
+`0b1011`), `Position` (0 right, 1 left), `Language` ("en"/"vi", absent = follow Windows), `PopupPinned` (0/1),
+`PopupSlot` (0 above the bar, 1 top-left, 2 top-right, 3 bottom-left, 4 bottom-right of the work area).
 
 ## Rules
 

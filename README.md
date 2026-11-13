@@ -11,6 +11,7 @@ Shows CPU, GPU, VRAM and RAM usage right on the Windows taskbar. Click it for de
 - **Lightweight**: a single ~350 KB exe using about 6 MB of RAM. No installer, no admin rights, no driver.
 - **Same numbers as Task Manager**: CPU and GPU come from Performance Counters (PDH). Works with NVIDIA, AMD and Intel graphics, including multi-GPU laptops.
 - **Detail panel**: per-thread CPU load, clock speed, RAM and commit charge, 3D / Copy / Video load per GPU, VRAM, and 60-second history graphs.
+- Pin the detail panel to keep it open while you work, and drag it to the top-left, top-right, bottom-left or bottom-right corner of the screen. Both choices are remembered.
 - Choose which metrics appear on the bar (CPU, GPU, VRAM, RAM) from the right-click menu. CPU, GPU and RAM are shown by default.
 - Place the bar next to the notification area (default) or at the left edge of the taskbar, which is empty when the taskbar icons are centered.
 - Values ≥ 60% turn yellow, ≥ 85% turn red.
@@ -40,8 +41,10 @@ The exe is not code-signed yet, so SmartScreen may warn on first run: click **Mo
 | Action | Result |
 |---|---|
 | Left-click the bar | Open / close the detail panel |
-| Esc or click elsewhere | Close the detail panel |
-| Right-click the bar | Menu: check for updates, metrics shown on the taskbar, position, start with Windows, language, exit |
+| Esc or click elsewhere | Close the detail panel (unless pinned) |
+| Pin button in the panel's top-right corner, or **Keep details panel open** in the menu | Keep the panel open when you click elsewhere. A pinned panel closes with Esc, its close button or another click on the bar, and hides while the bar does (e.g. a fullscreen video) |
+| Drag the panel | Dotted outlines show the five places it can go (above the bar, or one of the four screen corners); it snaps to the nearest one on release. Esc cancels |
+| Right-click the bar | Menu: check for updates, metrics shown on the taskbar, position, keep details panel open, start with Windows, language, exit |
 
 ![Right-click menu](docs/menu.png)
 

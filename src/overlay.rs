@@ -70,11 +70,12 @@ const LABELS: [&str; 4] = ["CPU", "GPU", "VRAM", "RAM"];
 const ID_SHOW: usize = 120; // + index into LABELS
 const ID_POS_RIGHT: usize = 130;
 const ID_POS_LEFT: usize = 131;
+const ID_PIN: usize = 140;
 
 /// Which metrics are on the bar, one bit per entry of LABELS. Stored in
 /// HKCU\Software\TaskbarMonitor\Metrics; defaults to CPU, GPU and RAM.
 const DEFAULT_SHOWN: u32 = 0b1011;
-const SETTINGS_KEY: PCWSTR = w!("Software\\TaskbarMonitor");
+pub(crate) const SETTINGS_KEY: PCWSTR = w!("Software\\TaskbarMonitor");
 const SHOWN_VALUE: PCWSTR = w!("Metrics");
 /// Where the bar sits on the taskbar: 0 = right, next to the notification area; 1 = left edge.
 const POSITION_VALUE: PCWSTR = w!("Position");
@@ -86,7 +87,7 @@ thread_local! {
     static LEFT: Cell<bool> = Cell::new(read_dword(SETTINGS_KEY, POSITION_VALUE) == Some(1));
 }
 
-fn read_dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
+pub(crate) fn read_dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
     let mut v = 0u32;
     let mut size = 4u32;
     let r = unsafe {
@@ -103,7 +104,7 @@ fn read_dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
     (r == ERROR_SUCCESS).then_some(v)
 }
 
-fn write_setting(name: PCWSTR, v: u32) {
+pub(crate) fn write_setting(name: PCWSTR, v: u32) {
     unsafe {
         let _ = RegSetKeyValueW(HKEY_CURRENT_USER, SETTINGS_KEY, name, REG_DWORD.0, Some(&v as *const u32 as _), 4);
     }
@@ -344,6 +345,8 @@ pub fn update_position(hwnd: HWND) {
             if visible {
                 let _ = ShowWindow(hwnd, SW_HIDE);
             }
+            // A pinned panel goes with the bar until it is back
+            popup::on_bar_hidden();
             return;
         };
         let mut flags = SWP_NOACTIVATE;
@@ -365,6 +368,9 @@ pub fn update_position(hwnd: HWND) {
             HWND::default()
         };
         let _ = SetWindowPos(hwnd, Some(after), x, y, w, h, flags);
+        if !visible {
+            popup::on_bar_shown();
+        }
     }
 }
 
@@ -522,7 +528,9 @@ unsafe fn paint(hwnd: HWND) {
 }
 
 unsafe fn context_menu(hwnd: HWND) {
-    popup::close();
+    // The menu is owned by the panel and the panel re-asserts topmost every second, so it can't stay
+    // open under the menu. A pinned one is brought back afterwards.
+    let was_open = popup::close();
     let Ok(menu) = CreatePopupMenu() else { return };
     let latest = latest();
     let v = update::VERSION;
@@ -560,6 +568,7 @@ unsafe fn context_menu(hwnd: HWND) {
         item(sub, MF_STRING | check(left) | left_ok, ID_POS_LEFT, tr!("Left edge of the taskbar", "Mép trái taskbar"));
         item(menu, MF_POPUP, sub.0 as usize, tr!("Position", "Vị trí"));
     }
+    item(menu, MF_STRING | check(popup::pinned()), ID_PIN, tr!("Keep details panel open", "Giữ bảng chi tiết luôn mở"));
     item(menu, MF_STRING | check(autostart::enabled()), ID_AUTOSTART, tr!("Start with Windows", "Khởi động cùng Windows"));
     if let Ok(sub) = CreatePopupMenu() {
         // Language names stay in their own language so anyone can find theirs
@@ -620,8 +629,14 @@ unsafe fn context_menu(hwnd: HWND) {
             });
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
+        ID_PIN => popup::set_pinned(!popup::pinned()),
         ID_EXIT => quit(hwnd),
         _ => {}
+    }
+    // Pinning from the menu while the panel was open keeps it open; unpinning leaves it closed,
+    // like any unpinned panel the menu closes
+    if was_open && popup::pinned() && cmd.0 as usize != ID_EXIT {
+        popup::reopen();
     }
 }
 

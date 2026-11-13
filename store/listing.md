@@ -40,6 +40,8 @@ Click the bar for a detail panel:
 • GPU: 3D, copy and video load for every graphics card (NVIDIA, AMD and Intel, including laptops with two GPUs), VRAM and shared memory
 • System: processes, threads, handles and up time
 
+Pin the panel to keep it open while you work, and drag it to any corner of the screen.
+
 Right-click the bar to choose which metrics to show (CPU, GPU, VRAM, RAM), put the bar on the left or right of the taskbar, start with Windows, or switch between English and Vietnamese.
 
 Light and out of the way:
@@ -63,6 +65,7 @@ Same numbers as Task Manager
 Detail panel with per-thread CPU load and 60-second graphs
 Works with NVIDIA, AMD and Intel graphics, including multi-GPU laptops
 Choose which metrics to show and where the bar sits
+Pin the detail panel open and drag it to a screen corner
 Hides automatically for fullscreen games and videos
 English and Vietnamese interface
 ```
