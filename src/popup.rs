@@ -85,7 +85,7 @@ struct Gesture {
     work: RECT,
     /// Where the panel would land in each slot.
     rects: [RECT; SLOTS],
-    /// Slots offered while dragging: a corner that mostly overlaps slot 0 is left out.
+    /// Slots offered while dragging: a corner that coincides with slot 0 is left out.
     offered: [bool; SLOTS],
     /// Slot nearest to the panel right now.
     nearest: u32,
@@ -358,13 +358,6 @@ fn mouse_xy(lp: LPARAM) -> (i32, i32) {
     ((lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32)
 }
 
-/// Area of the intersection of two rectangles.
-fn overlap(a: &RECT, b: &RECT) -> i64 {
-    let w = (a.right.min(b.right) - a.left.max(b.left)).max(0) as i64;
-    let h = (a.bottom.min(b.bottom) - a.top.max(b.top)).max(0) as i64;
-    w * h
-}
-
 fn centre(r: &RECT) -> (i64, i64) {
     ((r.left + r.right) as i64 / 2, (r.top + r.bottom) as i64 / 2)
 }
@@ -494,10 +487,13 @@ unsafe fn begin_drag(hwnd: HWND) {
         let (x, y) = slot_pos(&a, i as u32);
         *slot = RECT { left: x, top: y, right: x + w, bottom: y + h };
     }
-    // A corner that mostly overlaps slot 0 (a bar near it, a small screen) would be a second,
-    // confusingly close target: slot 0 wins
+    // A corner can sit close to slot 0 (the bar is near it): both stay on offer, since the preview
+    // shows which one the panel will land in. Only a corner that coincides with slot 0 is left out.
+    let (x0, y0) = centre(&g.rects[0]);
+    let same = (px(16.0, s) as i64).pow(2);
     for i in 1..SLOTS {
-        g.offered[i] = overlap(&g.rects[0], &g.rects[i]) * 2 <= w as i64 * h as i64;
+        let (x, y) = centre(&g.rects[i]);
+        g.offered[i] = (x - x0).pow(2) + (y - y0).pow(2) > same;
     }
     g.work = a.work;
     g.nearest = nearest_slot(&g.rects, &g.offered, &r);
